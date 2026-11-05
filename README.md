@@ -29,30 +29,32 @@ python3 -m pip install -r requirements-test.txt
 
 ## 快速运行 v1
 
-以下命令从仓库根目录执行，替换 `genes.gtf` 和 `input.bam` 为自己的完整输入。GTF 与 BAM 应使用相同参考基因组和染色体命名。
+以下命令从仓库根目录执行，替换 `genes.gtf` 和 `input.bam` 为自己的完整输入。GTF 与 BAM 应使用相同参考基因组和染色体命名。注释输入 BAM 不要求预先排序，也不需要索引。
 
 ```bash
 ./PISA anno -gene-only -ignore-strand \
-  -gtf genes.gtf -t 4 -@ 4 \
+  -gtf genes.gtf -t 4 \
   -o gene_only.bam -report gene_only.csv input.bam
 
 samtools sort -@ 4 -o gene_only.sorted.bam gene_only.bam
 samtools index gene_only.sorted.bam
 ```
 
-`-t` 控制注释工作线程，`-@` 控制 BAM 文件读写线程。gene-only 已包括内含子范围，不需要另加 `-intron`。示例的 `-ignore-strand` 表示忽略链方向；应根据文库方向信息决定是否使用，不能只根据 read 的 FLAG 推断原始 RNA 来源。
+**当前 `PISA anno` 的 `-t`（默认 4）同时设置注释工作线程和 HTS 输入、输出线程，不是整个进程的线程总数上限。`-@` 虽然被解析，但当前实现没有使用其值，不能靠它增加读写线程。** 上面的 `samtools -@` 则是 samtools 自己的有效参数。gene-only 已包括内含子范围，不需要另加 `-intron`。示例的 `-ignore-strand` 表示忽略链方向；应根据文库方向信息决定是否使用，不能只根据 read 的 FLAG 推断原始 RNA 来源。
 
 只统计 CIGAR 的 `M/=/X` 实际比对碱基；`N/D` 跨越的参考区域不算覆盖。新剪接位点本身不会导致拒绝注释。输出保留输入比对记录、CB/UR 及非注释标签，但会替换旧基因和结构注释标签。
 
-如需在完整 BAM 上汇总同一 read 的全部比对：
+多线程注释输出不保证坐标有序，即使继承的 BAM header 仍标为有序，也要先 `samtools sort` 再建立索引或用 IGV 查看。
+
+如需在完整 BAM 上汇总同一 read 的全部比对，可直接使用未排序的 `gene_only.bam`，跳过上面的排序和索引，避免重复处理：
 
 ```bash
 python3 scripts/pisa_resolve_gene_reads.py \
-  --input gene_only.sorted.bam --gtf genes.gtf \
+  --input gene_only.bam --gtf genes.gtf \
   --output-dir read_gene_results --threads 4
 ```
 
-输出包括完整 `annotated.sorted.bam`、每个合格 read 一条 primary 的 `umi_input.primary.sorted.bam`、分类 BAM、逐 read TSV 和 JSON 汇总；均未执行去重。输出目录必须不存在或为空。详细规则与输出见 [使用说明](scripts/README.pisa_gene_only.md)。
+resolver 内部先按名称 collate，再将所有输出 BAM 坐标排序并建立索引。`--threads` 用于 collate、排序和索引，Python 的逐 read 判定仍串行执行。输出包括完整 `annotated.sorted.bam`、每个合格 read 一条 primary 的 `umi_input.primary.sorted.bam`、分类 BAM、逐 read TSV 和 JSON 汇总；均未执行去重。输出目录必须不存在或为空。详细规则与输出见 [使用说明](scripts/README.pisa_gene_only.md)。
 
 ## GX 与后续 UMI 分组
 

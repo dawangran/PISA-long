@@ -8,7 +8,7 @@
 
 ```bash
 ./PISA anno -gene-only-v2 -ignore-strand \
-  -gtf genes.gtf -t 4 -@ 4 \
+  -gtf genes.gtf -t 4 \
   -o experiment_v2.bam -report experiment_v2.csv \
   input.bam
 
@@ -51,18 +51,18 @@ v2的GX覆盖率增加不等于准确率提高。仓库测试明确保留1 bp边
 1. 修改后的 `PISA anno -gene-only` 对每条 alignment 计算基因区域的实际比对碱基支持。它包含 primary、secondary、supplementary 的证据。
 2. `scripts/pisa_resolve_gene_reads.py` 汇总同一文库、同一 QNAME 的完整比对集合，给出 read 级标签，并输出完整 BAM 与 primary-only 工作 BAM。
 
-Python 脚本需要 Python 3.10+、`pysam` 和 `samtools`。它用普通 `samtools collate` 将同名记录聚到一起，逐 read 处理；没有使用会过滤记录的 `collate -f`，也不会在内存中保存全 BAM。磁盘上需要容纳中间 BAM、最终 BAM 及分类子集。
+Python 脚本需要 Python 3.10+、`pysam` 和 `samtools`。它用普通 `samtools collate` 将同名记录聚到一起，逐 read 处理；没有使用会过滤记录的 `collate -f`，也不会在内存中保存全 BAM。磁盘上需要容纳中间 BAM、最终 BAM 及分类子集。`--threads` 用于 collate、输出排序和索引；Python 逐 read 的归属判定仍串行执行。
 
 ## 运行
 
-先构建修改后的 PISA，使用与原分析一致的完整 GTF：
+先构建修改后的 PISA，使用与原分析一致的完整 GTF。注释输入 BAM 不要求排序或索引；下面将注释结果直接交给 resolver，避免提前排序：
 
 ```bash
 make -j 8
 
 ./PISA anno -gene-only -ignore-strand \
   -gtf genes.gtf \
-  -t 4 -@ 4 \
+  -t 4 \
   -o alignment_gene_only.bam \
   -report alignment_gene_only.report.csv \
   input.bam
@@ -74,7 +74,9 @@ python3 scripts/pisa_resolve_gene_reads.py \
   --threads 4
 ```
 
-`-t` 是 PISA 注释线程，`-@` 是文件读写线程。`-intron` 在 gene-only 模式没有必要：这个模式使用整个 gene body，包括内含子。`-ignore-strand` 是示例选择；应根据文库方向信息决定，不等于文库一定没有链信息。
+**当前 `PISA anno` 的 `-t`（默认 4）同时设置注释工作线程和 HTS 输入、输出线程，不是整个进程的线程总数上限。`-@` 被解析但未用于设置线程，所以当前无效；示例中的 `samtools -@` 属于 samtools 自己的参数，仍然有效。** `-intron` 在 gene-only 模式没有必要：这个模式使用整个 gene body，包括内含子。`-ignore-strand` 是示例选择；应根据文库方向信息决定，不等于文库一定没有链信息。
+
+多线程 PISA 注释输出不保证坐标有序，即使继承的 header 仍标为有序。若直接建立索引或用 IGV 查看，先执行 `samtools sort`；若交给 resolver，无需预先排序或索引，它会 collate 输入并将所有输出 BAM 坐标排序、建立索引。
 
 输出目录必须不存在或为空，脚本拒绝覆盖已有结果。可用 `--temp-dir /path/to/scratch` 指定临时文件位置。
 
@@ -137,7 +139,7 @@ PISA 的 gene-only 模式清理旧的基因、转录本、区域注释以及本�
 
 ## 输出文件
 
-所有 BAM 均坐标排序并带 `.bai`：
+resolver 输出的所有 BAM 均坐标排序并带 `.bai`：
 
 | 文件 | 内容 |
 |---|---|
