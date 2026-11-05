@@ -1,0 +1,2 @@
+# Synthetic annotation/regression tests; Python 3.10 or newer.
+pysam==0.24.0

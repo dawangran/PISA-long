@@ -1,0 +1,222 @@
+PROG= PISA
+
+all: $(PROG)
+
+HTSDIR = third_party/htslib-1.10.2
+include $(HTSDIR)/htslib.mk
+HTSLIB = $(HTSDIR)/libhts.a
+HTSVERSION = $(HTSDIR)/version.h
+
+#FMLDIR = third_party/fermi-lite
+#include $(FMLDIR)/fermi.mk
+#FMLLIB = $(FMLDIR)/libfml.a
+
+LIBA = src/liba.a
+
+ZLIBDIR= third_party/zlib-1.2.11
+include $(ZLIBDIR)/zlib.mk
+LIBZ = $(ZLIBDIR)/libz.a
+
+# make's /bin/sh has a minimal PATH; make Homebrew binaries visible on macOS
+export PATH := /opt/homebrew/bin:/usr/local/bin:$(PATH)
+
+# Prefer Homebrew gcc on macOS (Apple clang lacks OpenMP); fall back to system gcc/cc.
+# Note: plain assignment because ?= does not override make's built-in default (CC=cc).
+CC        = $(shell command -v gcc-16 2>/dev/null || command -v gcc-14 2>/dev/null || command -v gcc 2>/dev/null || echo cc)
+BUILD_TYPE ?= release
+ifeq ($(BUILD_TYPE),debug)
+CFLAGS   = -Wall -O0 -g -D_FILE_OFFSET_BITS=64
+else
+CFLAGS   = -Wall -O3 -D_FILE_OFFSET_BITS=64
+endif
+DFLAGS   =
+INCLUDES = -Isrc -I$(HTSDIR)/ -I. -I$(ZLIBDIR)
+LIBS = -pthread -lm
+# Optional deps: auto-detected (override with: make USE_BZ2=0 etc.)
+USE_BZ2   ?= $(shell echo 'int main(){return 0;}' | $(CC) -include bzlib.h -x c - -lbz2 -o /dev/null 2>/dev/null && echo 1 || echo 0)
+USE_LZMA  ?= $(shell echo 'int main(){return 0;}' | $(CC) -include lzma.h -x c - -llzma -o /dev/null 2>/dev/null && echo 1 || echo 0)
+USE_CURL  ?= $(shell echo 'int main(){return 0;}' | $(CC) -include curl/curl.h -x c - -lcurl -o /dev/null 2>/dev/null && echo 1 || echo 0)
+ifeq ($(USE_BZ2),1)
+  LIBS += -lbz2
+endif
+ifeq ($(USE_LZMA),1)
+  LIBS += -llzma
+endif
+ifeq ($(USE_CURL),1)
+  LIBS += -lcurl
+endif
+
+# OpenMP detection: tier 1 gcc -fopenmp, tier 2 clang + libomp, tier 3 single-threaded.
+# Homebrew's libomp is keg-only, so probe the keg prefix explicitly.
+LIBOMP_PREFIX := $(shell for d in /opt/homebrew/opt/libomp /usr/local/opt/libomp; do test -f $$d/lib/libomp.dylib && echo $$d && break; done 2>/dev/null)
+OMP_EXTRA     = $(if $(LIBOMP_PREFIX),-I$(LIBOMP_PREFIX)/include) $(if $(LIBOMP_PREFIX),-L$(LIBOMP_PREFIX)/lib)
+ifeq ($(shell echo 'int main(){return 0;}' | $(CC) -fopenmp -x c - -o /dev/null 2>/dev/null && echo yes),yes)
+CFLAGS   += -fopenmp
+else ifeq ($(shell echo 'int main(){return 0;}' | $(CC) -Xpreprocessor -fopenmp $(OMP_EXTRA) -x c - -lomp -o /dev/null 2>/dev/null && echo yes),yes)
+CFLAGS   += -Xpreprocessor -fopenmp $(if $(LIBOMP_PREFIX),-I$(LIBOMP_PREFIX)/include)
+LIBS     += $(if $(LIBOMP_PREFIX),-L$(LIBOMP_PREFIX)/lib) -lomp
+else
+$(warning OpenMP unavailable: building single-threaded)
+endif
+
+#all:$(PROG)
+
+# The release identity is maintained explicitly in pisa_version.h.
+PYTHON ?= python3
+
+.SUFFIXES:.c .o
+
+.PHONY:all debug clean clean-all distclean install lib tags test testclean 
+
+debug:
+	@$(MAKE) BUILD_TYPE=debug clean all
+
+force:
+
+.c.o:
+	@printf "Compiling $<...                               \r"
+	@$(CC) -c $(CFLAGS) $(DFLAGS) $(INCLUDES) $< -o $@
+
+LIB_OBJ = src/barcode_list.o \
+	src/bam_anno_vcf.o \
+	src/bed.o \
+	src/number.o \
+	src/fastq.o \
+	src/kson.o \
+	src/json_config.o \
+	src/gtf.o \
+	src/region_index.o \
+	src/dict.o \
+	src/ksa.o \
+	src/bam_pool.o \
+	src/umi_corr.o \
+	src/read_tags.o \
+	src/sim_search.o \
+	src/fragment.o \
+	src/compactDNA.o \
+	src/bam_region.o \
+	src/dna_pool.o \
+	src/bam_files.o \
+	src/biostring.o \
+	src/read_anno.o \
+	src/kthread.o \
+	src/coverage.o
+
+AOBJ = src/main.o \
+	src/bam_anno.o \
+	src/bam_count.o \
+	src/bam_pick.o \
+	src/sam2bam.o \
+	src/bam_attr_count.o \
+	src/fastq_sort.o \
+	src/fastq_parse_barcode.o \
+	src/bam_tag_corr.o \
+	src/bam2fq.o \
+	src/bam_extract_tags.o \
+	src/bam_rmdup.o\
+	src/gene_fusion.o \
+	src/bam_depth.o \
+	src/usage.o \
+	src/addtags.o \
+	src/fragment_count.o \
+	src/fastq_stream.o \
+	src/fastq_parse2.o \
+	src/gtf_format.o \
+	src/callept.o \
+	src/genomecov.o \
+	src/bed_merge.o \
+	src/bed_anno.o \
+	src/gtf2bed.o \
+	src/bed_flatten.o \
+	src/bam_cov.o \
+	src/pisa_history.o
+
+$(LIBA): $(LIB_OBJ)
+	@-rm -f $@
+	$(AR) -rcs $@ $(LIB_OBJ)
+
+test: $(PROG)
+	$(PYTHON) -m unittest discover -s scripts/tests -v
+
+PISA: $(HTSLIB) $(LIBZ) $(LIBA) $(AOBJ)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $(AOBJ) src/liba.a $(HTSLIB) $(LIBS) $(LIBZ)
+
+# HTSlib generates version.h while building its library. Wait for that build
+# before compiling main.c, including on a fresh parallel build.
+$(HTSVERSION): $(HTSLIB)
+	+$(MAKE) -C $(HTSDIR) version.h
+
+prefix ?= /usr/local
+bindir ?= $(prefix)/bin
+
+install: $(PROG)
+	install -d $(bindir)
+	install -m 755 $(PROG) $(bindir)
+
+src/gtf_format.o: src/gtf_format.c
+src/fastq_parse2.o: src/fastq_parse2.c
+src/fastq_stream.o: src/fastq_stream.c
+src/read_anno.o: src/read_anno.c
+src/sim_search.o: src/sim_search.c
+src/bam_depth.o: src/bam_depth.c
+src/bam2fq.o: src/bam2fq.c
+src/bam_anno.o: src/bam_anno.c
+src/bam_count.o: src/bam_count.c pisa_version.h
+src/bam_pick.o: src/bam_pick.c
+src/bam_anno_vcf.o: src/bam_anno_vcf.c
+src/bam_tag_corr.o: src/bam_tag_corr.c
+src/umi_corr.o: src/umi_corr.c
+src/fastq_parse_barcode.o: src/fastq_parse_barcode.c
+src/fastq_sort.o: src/fastq_sort.c
+src/dict.o: src/dict.c
+src/sam2bam.o: src/sam2bam.c
+src/barcode_list.o: src/barcode_list.c
+src/bed.o: src/bed.c
+src/number.o: src/number.c
+src/gtf.o: src/gtf.c
+src/region_index.o: src/region_index.c
+src/fastq.o: src/fastq.c
+src/json_config.o: src/json_config.c
+src/kson.o: src/kson.c
+src/bam_attr_count.o: src/bam_attr_count.c
+src/read_tags.o: src/read_tags.c
+src/ksa.o: src/ksa.c
+src/bam_pool.o: src/bam_pool.c
+src/bam_extract_tags.o: src/bam_extract_tags.c
+src/usage.o:src/usage.c pisa_version.h
+src/bam_rmdup.o:src/bam_rmdup.c
+src/dna_pool.o:src/dna_pool.c
+src/gene_fusion.o:src/gene_fusion.c
+src/bam_files.o:src/bam_files.c
+src/biostring.o:src/biostring.c
+src/kthread.o:src/kthread.c
+src/addtags.o:src/addtags.c
+src/fragment.o:src/fragment.c
+src/fragment_count.o:src/fragment_count.c pisa_version.h
+src/callept.o:src/callept.c
+src/genomecov.o:src/genomecov.c pisa_version.h
+src/main.o:src/main.c pisa_version.h $(HTSVERSION)
+src/coverage.o:src/coverage.c
+src/compactDNA.o:src/compactDNA.c
+src/bam_region.o:src/bam_region.c
+src/bed_merge.o:src/bed_merge.c
+src/bed_flatten.o:src/bed_flatten.c
+src/bam_cov.o:src/bam_cov.c
+src/pisa_history.o:src/pisa_history.c pisa_version.h
+src/gtf2bed.o:src/gtf2bed.c
+
+clean: testclean
+	-rm -f gmon.out *.o *~ $(PROG) 
+	-rm -rf *.dSYM plugins/*.dSYM test/*.dSYM
+	-rm src/*.o src/liba.a
+
+testclean:
+	-rm -f test/*.o test/*~ $(TEST_PROG)
+
+distclean: clean
+	-rm -f TAGS
+
+clean-all: clean clean-htslib
+
+tags:
+	ctags -f TAGS src/*.[ch] $(HTSDIR)/*.c
