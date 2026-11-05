@@ -18,18 +18,16 @@
 #include <zlib.h>
 #include <limits.h>
 #include <math.h>
-#include <stdint.h>
 #include "htslib/kseq.h"
 
 KSTREAM_INIT(gzFile, gzread, 0x10000)
 enum gene_only_status {
     GO_UNIQUE, GO_AMBIGUOUS, GO_INSUFFICIENT, GO_UNASSIGNED,
-    GO_UNMAPPED, GO_LOW_MAPQ, GO_QC_FAIL, GO_ASSIGNED_PARTIAL,
-    GO_UNKNOWN_MAPQ, GO_STATUS_COUNT
+    GO_UNMAPPED, GO_LOW_MAPQ, GO_QC_FAIL, GO_STATUS_COUNT
 };
 static const char *gene_only_status_names[GO_STATUS_COUNT] = {
     "unique", "ambiguous", "insufficient", "unassigned",
-    "unmapped", "low_mapq", "qc_fail", "assigned_partial", "unknown_mapq"
+    "unmapped", "low_mapq", "qc_fail"
 };
 struct read_stat {
 
@@ -81,15 +79,10 @@ static struct args {
 
     int vague_edge;
     int gene_only;
-    int gene_only_v2;
     int gene_min_bp;
     int gene_minor_bp;
     double gene_min_frac;
     double gene_minor_frac;
-    double gene_v2_main_frac;
-    double gene_v2_exclusive_frac;
-    double gene_v2_exon_frac;
-    double gene_v2_weak_frac;
 
     // for percent spliced index (PSI)
     int psi;
@@ -157,15 +150,10 @@ static struct args {
     .reverse_trans   = 0,
     .vague_edge      = 0,
     .gene_only       = 0,
-    .gene_only_v2    = 0,
     .gene_min_bp     = 100,
     .gene_minor_bp   = 100,
     .gene_min_frac   = 0.8,
     .gene_minor_frac = 0.2,
-    .gene_v2_main_frac = 0.8,
-    .gene_v2_exclusive_frac = 0.2,
-    .gene_v2_exon_frac = 0.5,
-    .gene_v2_weak_frac = 0.1,
     .psi             = 0,
     .psi_tags        = NULL,
     
@@ -330,9 +318,6 @@ static double gene_only_fraction_arg(const char *value, const char *name)
     return n;
 }
 
-static void gene_v2_models_build(const struct gtf_spec *G);
-static void gene_v2_models_destroy(void);
-
 static int parse_args(int argc, char **argv)
 {
     int i;
@@ -344,8 +329,6 @@ static int parse_args(int argc, char **argv)
     const char *vague_edge = NULL;
     const char *gene_min_bp = NULL, *gene_minor_bp = NULL;
     const char *gene_min_frac = NULL, *gene_minor_frac = NULL;
-    const char *v2_main = NULL, *v2_exclusive = NULL, *v2_exon = NULL, *v2_weak = NULL;
-    int v1_seen = 0;
     
     for (i = 1; i < argc; ) {
         const char *a = argv[i++];
@@ -360,20 +343,9 @@ static int parse_args(int argc, char **argv)
         else if (strcmp(a, "-chunk") == 0) var = &chunk;
         else if (strcmp(a, "-q") == 0) var = &map_qual;
         else if (strcmp(a, "-gene-only") == 0 || strcmp(a, "--gene-only") == 0) {
-            if (args.gene_only_v2) error("Choose only one of -gene-only and -gene-only-v2.");
-            v1_seen = 1;
             args.gene_only = 1;
             continue;
         }
-        else if (strcmp(a, "-gene-only-v2") == 0 || strcmp(a, "--gene-only-v2") == 0) {
-            if (v1_seen) error("Choose only one of -gene-only and -gene-only-v2.");
-            args.gene_only = args.gene_only_v2 = 1;
-            continue;
-        }
-        else if (strcmp(a, "-gene-v2-main-frac") == 0) var = &v2_main;
-        else if (strcmp(a, "-gene-v2-exclusive-frac") == 0) var = &v2_exclusive;
-        else if (strcmp(a, "-gene-v2-exon-frac") == 0) var = &v2_exon;
-        else if (strcmp(a, "-gene-v2-weak-frac") == 0) var = &v2_weak;
         else if (strcmp(a, "-gene-min-bp") == 0) var = &gene_min_bp;
         else if (strcmp(a, "-gene-minor-bp") == 0) var = &gene_minor_bp;
         else if (strcmp(a, "-gene-min-frac") == 0) var = &gene_min_frac;
@@ -488,14 +460,6 @@ static int parse_args(int argc, char **argv)
     if (gene_minor_frac) args.gene_minor_frac = gene_only_fraction_arg(gene_minor_frac, "-gene-minor-frac");
     if (!args.gene_only && (gene_min_bp || gene_minor_bp || gene_min_frac || gene_minor_frac))
         error("Gene coverage thresholds require -gene-only.");
-    if (args.gene_only_v2 && (gene_min_bp || gene_minor_bp || gene_min_frac || gene_minor_frac))
-        error("-gene-only-v2 uses -gene-v2-* thresholds; v1 thresholds cannot be combined with v2.");
-    if (!args.gene_only_v2 && (v2_main || v2_exclusive || v2_exon || v2_weak))
-        error("-gene-v2-* thresholds require -gene-only-v2.");
-    if (v2_main) args.gene_v2_main_frac = gene_only_fraction_arg(v2_main, "-gene-v2-main-frac");
-    if (v2_exclusive) args.gene_v2_exclusive_frac = gene_only_fraction_arg(v2_exclusive, "-gene-v2-exclusive-frac");
-    if (v2_exon) args.gene_v2_exon_frac = gene_only_fraction_arg(v2_exon, "-gene-v2-exon-frac");
-    if (v2_weak) args.gene_v2_weak_frac = gene_only_fraction_arg(v2_weak, "-gene-v2-weak-frac");
     if (args.gene_only) {
         if (!args.gtf_fname) error("-gene-only requires -gtf.");
         if (args.anno_only) error("-gene-only preserves all records and cannot be combined with -anno-only.");
@@ -570,7 +534,6 @@ sam_file:
     if (args.gtf_fname) {
         args.G = gtf_read_lite(args.gtf_fname);
         if (args.G == NULL) error("GTF is empty.");
-        if (args.gene_only_v2) gene_v2_models_build(args.G);
         if (tags) {
             kstring_t str = {0,0,0};
             kputs(tags, &str);
@@ -1326,14 +1289,6 @@ static void gene_only_clear_tags(bam1_t *b)
         while ((data = bam_aux_get(b, tags[i])) != NULL)
             if (bam_aux_del(b, data) < 0) error("Failed to remove stale annotation tag.");
     }
-    if (args.gene_only_v2) {
-        const char *extra[] = {"ZE", "ZU", "ZX", "ZJ"};
-        for (i = 0; i < sizeof(extra) / sizeof(extra[0]); ++i) {
-            uint8_t *data;
-            while ((data = bam_aux_get(b, extra[i])) != NULL)
-                if (bam_aux_del(b, data) < 0) error("Failed to remove stale v2 evidence tag.");
-        }
-    }
 }
 
 static int64_t gene_only_matched_bp(const bam1_t *b)
@@ -1544,393 +1499,6 @@ static void bam_gene_only_anno(bam1_t *b, const struct gtf_spec *G,
 done:
     gene_only_string(b, "ZA", gene_only_status_names[status]);
     stat->gene_only_counts[status]++;
-}
-
-/* Experimental v2 is intentionally separate from the v1 classifier.  All
- * support is represented as sorted reference intervals: one CIGAR visits each
- * reference position at most once, so these have the same cardinalities and
- * set relations as matched-query support for a single alignment. */
-struct gene_v2_vec {
-    struct gene_only_interval *v;
-    size_t n, m;
-};
-struct gene_v2_model {
-    struct gene_v2_vec exons, junctions;
-};
-KHASH_MAP_INIT_INT64(gene_v2_models, struct gene_v2_model *)
-static khash_t(gene_v2_models) *gene_v2_models = NULL;
-
-static void gene_v2_push(struct gene_v2_vec *a, int64_t start, int64_t end)
-{
-    if (end <= start) return;
-    if (a->n == a->m) {
-        a->m = a->m ? 2 * a->m : 8;
-        void *v = realloc(a->v, a->m * sizeof(*a->v));
-        if (!v) error("Out of memory building v2 intervals.");
-        a->v = v;
-    }
-    a->v[a->n++] = (struct gene_only_interval){start, end};
-}
-
-static void gene_v2_append(struct gene_v2_vec *to, const struct gene_v2_vec *from)
-{
-    size_t i;
-    for (i = 0; i < from->n; ++i) gene_v2_push(to, from->v[i].start, from->v[i].end);
-}
-
-/* merge=0 keeps distinct junction endpoint pairs, including overlapping ones. */
-static void gene_v2_sort(struct gene_v2_vec *a, int merge)
-{
-    if (a->n < 2) return;
-    qsort(a->v, a->n, sizeof(*a->v), gene_only_interval_compare);
-    size_t i, n = 0;
-    for (i = 0; i < a->n; ++i) {
-        if (n && a->v[i].start == a->v[n - 1].start && a->v[i].end == a->v[n - 1].end)
-            continue;
-        if (merge && n && a->v[i].start <= a->v[n - 1].end) {
-            if (a->v[i].end > a->v[n - 1].end) a->v[n - 1].end = a->v[i].end;
-        } else a->v[n++] = a->v[i];
-    }
-    a->n = n;
-}
-
-static int64_t gene_v2_length(const struct gene_v2_vec *a)
-{
-    size_t i;
-    int64_t n = 0;
-    for (i = 0; i < a->n; ++i) n += a->v[i].end - a->v[i].start;
-    return n;
-}
-
-static struct gene_v2_vec gene_v2_intersection(const struct gene_v2_vec *a,
-                                             const struct gene_v2_vec *b)
-{
-    struct gene_v2_vec out = {0};
-    size_t i = 0, j = 0;
-    while (i < a->n && j < b->n) {
-        int64_t lo = a->v[i].start > b->v[j].start ? a->v[i].start : b->v[j].start;
-        int64_t hi = a->v[i].end < b->v[j].end ? a->v[i].end : b->v[j].end;
-        gene_v2_push(&out, lo, hi);
-        if (a->v[i].end <= b->v[j].end) ++i;
-        else ++j;
-    }
-    return out;
-}
-
-static int64_t gene_v2_intersection_length(const struct gene_v2_vec *a,
-                                          const struct gene_v2_vec *b)
-{
-    size_t i = 0, j = 0;
-    int64_t total = 0;
-    while (i < a->n && j < b->n) {
-        int64_t lo = a->v[i].start > b->v[j].start ? a->v[i].start : b->v[j].start;
-        int64_t hi = a->v[i].end < b->v[j].end ? a->v[i].end : b->v[j].end;
-        if (hi > lo) total += hi - lo;
-        if (a->v[i].end <= b->v[j].end) ++i;
-        else ++j;
-    }
-    return total;
-}
-
-static int gene_v2_has_pair(const struct gene_v2_vec *a, struct gene_only_interval value)
-{
-    size_t lo = 0, hi = a->n;
-    while (lo < hi) {
-        size_t mid = lo + (hi - lo) / 2;
-        int cmp = gene_only_interval_compare(&a->v[mid], &value);
-        if (cmp == 0) return 1;
-        if (cmp < 0) lo = mid + 1;
-        else hi = mid;
-    }
-    return 0;
-}
-
-static int gene_v2_junction_subset(const struct gene_v2_vec *a, const struct gene_v2_vec *b)
-{
-    size_t i;
-    for (i = 0; i < a->n; ++i) if (!gene_v2_has_pair(b, a->v[i])) return 0;
-    return 1;
-}
-
-static void gene_v2_models_build(const struct gtf_spec *G)
-{
-    gene_v2_models = kh_init(gene_v2_models);
-    if (!gene_v2_models) error("Out of memory allocating v2 annotation index.");
-    int c, g, t, e;
-    for (c = 0; c < dict_size(G->name); ++c) {
-        const struct gtf_ctg *ctg = dict_query_value(G->name, c);
-        for (g = 0; g < ctg->n_gtf; ++g) {
-            const struct gtf *gene = ctg->gtf[g];
-            if (gene->gene_id < 0) continue;
-            const char *id = dict_name(G->gene_id, gene->gene_id);
-            if (strpbrk(id, ";|\t\n\r")) error("Unsupported delimiter in gene_id: %s.", id);
-            struct gene_v2_model *model = calloc(1, sizeof(*model));
-            if (!model) error("Out of memory allocating v2 gene model.");
-            for (t = 0; t < gene->n_gtf; ++t) {
-                const struct gtf *tx = gene->gtf[t];
-                struct gene_v2_vec exons = {0};
-                for (e = 0; e < tx->n_gtf; ++e) {
-                    const struct gtf *exon = tx->gtf[e];
-                    if (exon->type == feature_exon)
-                        gene_v2_push(&exons, (int64_t)exon->start - 1, exon->end);
-                }
-                gene_v2_sort(&exons, 1);
-                gene_v2_append(&model->exons, &exons);
-                size_t j;
-                for (j = 1; j < exons.n; ++j)
-                    gene_v2_push(&model->junctions, exons.v[j - 1].end, exons.v[j].start);
-                free(exons.v);
-            }
-            gene_v2_sort(&model->exons, 1);
-            gene_v2_sort(&model->junctions, 0);
-            int ret;
-            khiter_t k = kh_put(gene_v2_models, gene_v2_models, (uint64_t)(uintptr_t)gene, &ret);
-            if (ret < 0) error("Out of memory growing v2 annotation index.");
-            if (ret == 0) error("Duplicate gene pointer in v2 annotation index.");
-            kh_value(gene_v2_models, k) = model;
-        }
-    }
-    LOG_print("Experimental gene-only v2: precomputed exon unions and exact junction sets.");
-}
-
-static void gene_v2_models_destroy(void)
-{
-    if (!gene_v2_models) return;
-    khiter_t k;
-    for (k = kh_begin(gene_v2_models); k != kh_end(gene_v2_models); ++k) {
-        if (!kh_exist(gene_v2_models, k)) continue;
-        struct gene_v2_model *model = kh_value(gene_v2_models, k);
-        free(model->exons.v);
-        free(model->junctions.v);
-        free(model);
-    }
-    kh_destroy(gene_v2_models, gene_v2_models);
-    gene_v2_models = NULL;
-}
-
-static void gene_v2_alignment_blocks(const bam1_t *b, struct gene_v2_vec *matched,
-                                     struct gene_v2_vec *junctions)
-{
-    const uint32_t *cigar = bam_get_cigar(b);
-    int64_t ref = b->core.pos;
-    uint32_t i;
-    int left_matched = 0;
-    for (i = 0; i < b->core.n_cigar; ++i) {
-        int op = bam_cigar_op(cigar[i]);
-        int64_t len = bam_cigar_oplen(cigar[i]);
-        if (op == BAM_CMATCH || op == BAM_CEQUAL || op == BAM_CDIFF) {
-            gene_v2_push(matched, ref, ref + len);
-            left_matched = 1;
-            ref += len;
-        } else if (op == BAM_CREF_SKIP) {
-            /* I/D may flank N. M support must occur in both adjacent
-             * N-delimited segments; never search through another N. */
-            uint32_t j;
-            int right_matched = 0;
-            for (j = i + 1; j < b->core.n_cigar; ++j) {
-                int next = bam_cigar_op(cigar[j]);
-                if (next == BAM_CREF_SKIP) break;
-                if (next == BAM_CMATCH || next == BAM_CEQUAL || next == BAM_CDIFF) {
-                    right_matched = 1;
-                    break;
-                }
-            }
-            if (left_matched && right_matched) gene_v2_push(junctions, ref, ref + len);
-            left_matched = 0;
-            ref += len;
-        } else if (op == BAM_CDEL) ref += len;
-    }
-    gene_v2_sort(matched, 1);
-    gene_v2_sort(junctions, 0);
-}
-
-struct gene_v2_hit {
-    const char *id, *name;
-    struct gene_v2_vec body, exons, junctions;
-    int64_t bp, exon_bp, independent_bp, exclusive_exon_bp;
-    int keep, shared, weak;
-};
-
-static int gene_v2_hit_compare(const void *left, const void *right)
-{
-    const struct gene_v2_hit *a = left, *b = right;
-    return strcmp(a->id, b->id);
-}
-
-static void gene_v2_reason(kstring_t *reason, const char *value)
-{
-    if (reason->l) kputc(';', reason);
-    kputs(value, reason);
-}
-
-static void bam_gene_only_v2_anno(bam1_t *b, const struct gtf_spec *G,
-                                 const bam_hdr_t *h, struct read_stat *stat)
-{
-    gene_only_clear_tags(b);
-    const int64_t total = gene_only_matched_bp(b);
-    if (total > INT32_MAX) error("Aligned length exceeds ZQ int32 capacity for %s.", bam_get_qname(b));
-    if (bam_aux_update_int(b, "ZQ", (int32_t)total) < 0) error("Failed to write ZQ.");
-    enum gene_only_status status = GO_UNASSIGNED;
-    kstring_t reason = {0,0,0};
-    struct gene_v2_vec matched = {0}, observed_junctions = {0}, all_body = {0};
-    struct gene_v2_hit *hits = NULL;
-    int n = 0, i, j;
-
-    if ((b->core.flag & BAM_FUNMAP) || b->core.tid < 0 || b->core.tid >= h->n_targets) {
-        status = GO_UNMAPPED;
-        gene_v2_reason(&reason, "unmapped");
-        goto done_v2;
-    }
-    gene_v2_alignment_blocks(b, &matched, &observed_junctions);
-    int query_end = bam_endpos(b);
-    if (query_end < INT_MAX) ++query_end;
-    struct region_itr *itr = gtf_query(G, h->target_name[b->core.tid], b->core.pos, query_end);
-    if (itr && itr->n) {
-        hits = calloc(itr->n, sizeof(*hits));
-        if (!hits) error("Out of memory allocating v2 hits.");
-        for (i = 0; i < itr->n; ++i) {
-            const struct gtf *g = itr->rets[i];
-            if (g->gene_id < 0 || !gene_only_strand_matches(b, g)) continue;
-            struct gene_only_interval span = {(int64_t)g->start - 1, g->end};
-            struct gene_v2_vec one = {&span, 1, 1};
-            struct gene_v2_vec body = gene_v2_intersection(&matched, &one);
-            int64_t bp = gene_v2_length(&body);
-            if (!bp) { free(body.v); continue; }
-            struct gene_v2_hit *hit = &hits[n++];
-            hit->id = dict_name(G->gene_id, g->gene_id);
-            hit->name = g->gene_name < 0 ? hit->id : dict_name(G->gene_name, g->gene_name);
-            hit->body = body;
-            hit->bp = bp;
-            hit->keep = 1;
-            khiter_t key = kh_get(gene_v2_models, gene_v2_models, (uint64_t)(uintptr_t)g);
-            if (key == kh_end(gene_v2_models)) error("Missing precomputed v2 gene model.");
-            const struct gene_v2_model *model = kh_value(gene_v2_models, key);
-            hit->exons = gene_v2_intersection(&body, &model->exons);
-            hit->exon_bp = gene_v2_length(&hit->exons);
-            size_t k;
-            for (k = 0; k < observed_junctions.n; ++k)
-                if (gene_v2_has_pair(&model->junctions, observed_junctions.v[k]))
-                    gene_v2_push(&hit->junctions, observed_junctions.v[k].start, observed_junctions.v[k].end);
-            gene_v2_append(&all_body, &hit->body);
-        }
-    }
-    if (itr) region_itr_destroy(itr);
-    if (n > 1) qsort(hits, n, sizeof(*hits), gene_v2_hit_compare);
-    gene_v2_sort(&all_body, 1);
-    for (i = 0; i < n; ++i) {
-        if (i && strcmp(hits[i - 1].id, hits[i].id) == 0)
-            error("Duplicated v2 gene candidate %s.", hits[i].id);
-        struct gene_v2_vec others_body = {0}, others_exons = {0};
-        for (j = 0; j < n; ++j) {
-            if (i == j) continue;
-            gene_v2_append(&others_body, &hits[j].body);
-            gene_v2_append(&others_exons, &hits[j].exons);
-        }
-        gene_v2_sort(&others_body, 1);
-        gene_v2_sort(&others_exons, 1);
-        hits[i].independent_bp = hits[i].bp - gene_v2_intersection_length(&hits[i].body, &others_body);
-        hits[i].exclusive_exon_bp = hits[i].exon_bp - gene_v2_intersection_length(&hits[i].exons, &others_exons);
-        free(others_body.v); free(others_exons.v);
-    }
-    if (n) {
-        kstring_t ids = {0,0,0}, names = {0,0,0}, counts = {0,0,0},
-                  exons = {0,0,0}, independent = {0,0,0}, specific = {0,0,0}, junctions = {0,0,0};
-        for (i = 0; i < n; ++i) {
-            if (i) {
-                kputc(';', &ids); kputc(';', &names); kputc(';', &counts);
-                kputc(';', &exons); kputc(';', &independent); kputc(';', &specific); kputc(';', &junctions);
-            }
-            kputs(hits[i].id, &ids); kputs(hits[i].name, &names);
-            ksprintf(&counts, "%lld", (long long)hits[i].bp);
-            ksprintf(&exons, "%lld", (long long)hits[i].exon_bp);
-            ksprintf(&independent, "%lld", (long long)hits[i].independent_bp);
-            ksprintf(&specific, "%lld", (long long)hits[i].exclusive_exon_bp);
-            ksprintf(&junctions, "%llu", (unsigned long long)hits[i].junctions.n);
-        }
-        gene_only_string(b, "ZG", ids.s); gene_only_string(b, "ZN", names.s);
-        gene_only_string(b, "ZB", counts.s); gene_only_string(b, "ZE", exons.s);
-        gene_only_string(b, "ZU", independent.s); gene_only_string(b, "ZX", specific.s);
-        gene_only_string(b, "ZJ", junctions.s);
-        free(ids.s); free(names.s); free(counts.s); free(exons.s);
-        free(independent.s); free(specific.s); free(junctions.s);
-    }
-
-    int quality_ok = !(b->core.flag & BAM_FQCFAIL) && b->core.qual >= args.map_qual && b->core.qual != 255;
-    if (n > 1 && quality_ok) {
-        int main = -1, main_count = 0;
-        for (i = 0; i < n; ++i) {
-            if ((double)hits[i].independent_bp / total >= args.gene_v2_exclusive_frac &&
-                ((double)hits[i].bp / total >= args.gene_v2_main_frac ||
-                 (double)hits[i].exclusive_exon_bp / total >= args.gene_v2_exon_frac)) {
-                main = i;
-                ++main_count;
-            }
-        }
-        if (main_count == 1) {
-            struct gene_v2_vec weak_union = {0};
-            int shared_count = 0, weak_count = 0;
-            for (i = 0; i < n; ++i) {
-                if (i == main) continue;
-                hits[i].shared = gene_v2_intersection_length(&hits[i].body, &hits[main].body) == hits[i].bp &&
-                    gene_v2_intersection_length(&hits[i].exons, &hits[main].exons) == hits[i].exon_bp &&
-                    gene_v2_junction_subset(&hits[i].junctions, &hits[main].junctions);
-                if (hits[i].shared) { ++shared_count; hits[i].keep = 0; }
-                else if (!hits[i].exon_bp && !hits[i].junctions.n &&
-                         (double)hits[i].bp / total <= args.gene_v2_weak_frac) {
-                    hits[i].weak = 1;
-                    ++weak_count;
-                    gene_v2_append(&weak_union, &hits[i].body);
-                }
-            }
-            if (shared_count) gene_v2_reason(&reason, "shared_candidates_downgraded");
-            gene_v2_sort(&weak_union, 1);
-            if (weak_count) {
-                if ((double)gene_v2_length(&weak_union) / total <= args.gene_v2_weak_frac) {
-                    for (i = 0; i < n; ++i) if (hits[i].weak) hits[i].keep = 0;
-                    gene_v2_reason(&reason, "weak_intronic_candidates_downgraded");
-                } else gene_v2_reason(&reason, "weak_intronic_union_above_threshold");
-            }
-            free(weak_union.v);
-        } else gene_v2_reason(&reason, main_count ? "multiple_main_candidates" : "no_clear_main_candidate");
-    }
-    if (n) {
-        int kept = 0, last = -1;
-        kstring_t selected = {0,0,0}, key = {0,0,0}, names = {0,0,0};
-        for (i = 0; i < n; ++i) if (hits[i].keep) { ++kept; last = i; }
-        if (kept > 1) kputs("AMBIG:", &key);
-        j = 0;
-        for (i = 0; i < n; ++i) {
-            if (!hits[i].keep) continue;
-            if (j++) { kputc(';', &selected); kputc('|', &key); kputc('|', &names); }
-            kputs(hits[i].id, &selected); kputs(hits[i].id, &key); kputs(hits[i].name, &names);
-        }
-        gene_only_string(b, "ZC", selected.s);
-        gene_only_string(b, "GX", key.s); gene_only_string(b, "GN", names.s);
-        free(selected.s); free(key.s); free(names.s);
-        if (kept == 1) {
-            status = (double)hits[last].bp / total >= args.gene_v2_main_frac ? GO_UNIQUE : GO_ASSIGNED_PARTIAL;
-            if (status == GO_ASSIGNED_PARTIAL) gene_v2_reason(&reason, "gene_coverage_below_main_fraction");
-            else if (!reason.l) gene_v2_reason(&reason, "single_gene_support");
-        } else {
-            status = GO_AMBIGUOUS;
-            if ((double)gene_v2_length(&all_body) / total < args.gene_v2_main_frac)
-                gene_v2_reason(&reason, "candidate_union_coverage_below_main_fraction");
-            if (!reason.l) gene_v2_reason(&reason, "unresolved_gene_candidates");
-        }
-    } else gene_v2_reason(&reason, "no_actual_gene_overlap");
-    if (b->core.flag & BAM_FQCFAIL) { status = GO_QC_FAIL; gene_v2_reason(&reason, "qc_fail"); }
-    else if (b->core.qual == 255) { status = GO_UNKNOWN_MAPQ; gene_v2_reason(&reason, "MAPQ_unavailable"); }
-    else if (b->core.qual < args.map_qual) { status = GO_LOW_MAPQ; gene_v2_reason(&reason, "below_min_MAPQ"); }
-
-done_v2:
-    gene_only_string(b, "ZA", gene_only_status_names[status]);
-    if (reason.l) gene_only_string(b, "ZR", reason.s);
-    stat->gene_only_counts[status]++;
-    free(reason.s); free(matched.v); free(observed_junctions.v); free(all_body.v);
-    for (i = 0; i < n; ++i) {
-        free(hits[i].body.v); free(hits[i].exons.v); free(hits[i].junctions.v);
-    }
-    free(hits);
 }
 
 struct gtf_anno_type *bam_gtf_anno_core(bam1_t *b, struct gtf_spec const *G, bam_hdr_t *h, int vague_edge)
@@ -2297,8 +1865,7 @@ void *run_it(void *_d)
             if (!(c->flag & BAM_FUNMAP) && c->tid >= 0 && c->tid < h->n_targets &&
                 c->qual >= args.map_qual && !(c->flag & BAM_FQCFAIL))
                 dat->reads_pass_qc++;
-            if (args.gene_only_v2) bam_gene_only_v2_anno(b, args.G, h, stat);
-            else bam_gene_only_anno(b, args.G, h, stat);
+            bam_gene_only_anno(b, args.G, h, stat);
             continue;
         }
         // move the mapping quality check above of unmap and secondary alignment check. because both of these two jump to check -anno-only
@@ -2404,13 +1971,12 @@ void write_report()
             for (j = 0; j < GO_STATUS_COUNT; ++j) counts[j] += s->gene_only_counts[j];
         }
         fprintf(args.fp_report, "Metric,Value\n");
-        fprintf(args.fp_report, "Mode,%s\n", args.gene_only_v2 ?
-                "gene_only_v2_experimental_alignment_evidence" : "gene_only_alignment_evidence");
+        fprintf(args.fp_report, "Mode,gene_only_alignment_evidence\n");
         fprintf(args.fp_report, "Counting_unit,alignment_record_not_read_or_UMI\n");
         fprintf(args.fp_report, "Alignment_records,%llu\n", (unsigned long long)args.reads_input);
         fprintf(args.fp_report, "Mapped_alignment_records_passing_MAPQ_and_QC,%llu\n",
                 (unsigned long long)args.reads_pass_qc);
-        for (j = 0; j < (args.gene_only_v2 ? GO_STATUS_COUNT : GO_ASSIGNED_PARTIAL); ++j)
+        for (j = 0; j < GO_STATUS_COUNT; ++j)
             fprintf(args.fp_report, "%s,%llu\n", gene_only_status_names[j], (unsigned long long)counts[j]);
         return;
     }
@@ -2461,7 +2027,6 @@ static void memory_release()
     }
     dict_destroy(args.group_stat);
     if (args.B) bed_spec_destroy(args.B);
-    gene_v2_models_destroy();
     if (args.G) gtf_destroy(args.G);
     if (args.V) bed_spec_var_destroy(args.V);
     if (args.flatten_flag) bed_spec_destroy(args.flatten);

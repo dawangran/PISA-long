@@ -15,7 +15,7 @@ import pysam
 
 ANNOTATION_TAGS = {
     "GX", "GN", "RE", "TX", "AT", "EX", "JC", "FL", "ER",
-    "ZA", "ZG", "ZN", "ZB", "ZQ", "ZF", "ZC", "ZR", "ZE", "ZU", "ZX", "ZJ",
+    "ZA", "ZG", "ZN", "ZB", "ZQ", "ZF", "ZC", "ZR",
 }
 
 
@@ -126,8 +126,7 @@ def main():
         fields.extend([label + "_GX", label + "_GN", label + "_RE", label + "_ZA"])
     fields.extend(["new_GX", "new_GN", "new_ZA", "new_ZF", "new_ZC", "new_ZR",
                    "alignment_candidates_ZG", "alignment_support_ZB", "alignment_matched_ZQ",
-                   "alignment_exon_ZE", "alignment_exclusive_body_ZU",
-                   "alignment_exclusive_exon_ZX", "alignment_known_junctions_ZJ", "CIGAR"])
+                   "CIGAR"])
     with gzip.open(out / "per_alignment_comparison.tsv.gz", "wt") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t")
         writer.writeheader()
@@ -146,10 +145,6 @@ def main():
                            alignment_candidates_ZG=tag(read, "ZG"),
                            alignment_support_ZB=tag(read, "ZB"),
                            alignment_matched_ZQ=tag(read, "ZQ"),
-                           alignment_exon_ZE=tag(read, "ZE"),
-                           alignment_exclusive_body_ZU=tag(read, "ZU"),
-                           alignment_exclusive_exon_ZX=tag(read, "ZX"),
-                           alignment_known_junctions_ZJ=tag(read, "ZJ"),
                            CIGAR=read.cigarstring)
                 if category:
                     category_counts[category][status or "no_status"] += 1

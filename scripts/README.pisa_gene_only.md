@@ -2,49 +2,7 @@
 
 这个流程为长读 BAM 生成基因／候选组合标签，并准备每条 read 只有一条记录的 UMI-tools 输入。**它目前只做注释，不运行 UMI 纠错、不删除重复 reads、不生成已经去重的 BAM，也不是经过生物学验证的融合检测器。**
 
-## 新增：gene-only v2 实验模式（2026-11-05）
-
-当前源码同时包含两个gene-only模式。原 `-gene-only` 仍运行 v1 规则；新增 `-gene-only-v2` 用来实测[当前设计稿](DESIGN.pisa_gene_assignment_v2.md)。**两处已知边界（1 bp 外显子重叠、嵌套基因独占 body 为零）仍按草案执行，尚未修成正式规则。**
-
-```bash
-./PISA anno -gene-only-v2 -ignore-strand \
-  -gtf genes.gtf -t 4 \
-  -o experiment_v2.bam -report experiment_v2.csv \
-  input.bam
-
-samtools sort -@ 4 -o experiment_v2.sorted.bam experiment_v2.bam
-samtools index experiment_v2.sorted.bam
-```
-
-v2 不使用固定100 bp门槛。所有正重叠候选保留原始证据；主候选要求独占body比例达到20%，且body比例达到80%或特异外显子比例达到50%。只有主候选唯一时，才消减完全可被它解释的共享候选，或单项及合计并集均不超过10%的纯内含子弱候选。存在候选时保留单基因或排序后的AMBIG组合GX，单基因覆盖不足时标记 `ZA=assigned_partial`。
-
-| v2 参数 | 默认值 |
-|---|---:|
-| `-gene-v2-main-frac` | 0.8 |
-| `-gene-v2-exclusive-frac` | 0.2 |
-| `-gene-v2-exon-frac` | 0.5 |
-| `-gene-v2-weak-frac` | 0.1 |
-
-这些是实验预设，不是准确率已验证的阈值。v2不能与 `-gene-only` 或旧 `-gene-min-bp/-gene-minor-bp/-gene-min-frac/-gene-minor-frac` 混用。`-q`沿用当前PISA默认0；MAPQ255标记不可用。质量状态不删除已有候选GX。
-
-v2新增 `ZE/ZU/ZX/ZJ` 为Z类型字符串，与 `ZG` 的gene_id顺序一致、以分号分隔；`ZC` 和 `ZR` 分别记录最终候选与判定原因：
-
-| 标签 | 内容 |
-|---|---|
-| `ZE` | 外显子并集支持bp |
-| `ZU` | 相对于所有其他候选body并集的独占支持bp |
-| `ZX` | 相对于所有其他候选外显子并集的独占外显子支持bp |
-| `ZJ` | 精确匹配且两侧有实际比对支持的已知junction数量 |
-| `ZC` | 最终保留的候选gene_id |
-| `ZR` | 共享／弱内含子降级、覆盖不足等原因 |
-
-GTF外显子和junction索引在加载时构建一次，线程间只读共享。该输出是alignment级注释，包括secondary和supplementary；并不等于每条read已经得到统一分组。
-
-**当前Python read resolver仍使用v1规则，运行它会重新计算并覆盖v2 GX。** 这两个层级不能混为同一套v2流程。`assigned_partial`与同基因`unique`使用同一GX；只按GX分组时，UMI-tools不会自动按ZA排除partial记录。
-
-v2的GX覆盖率增加不等于准确率提高。仓库测试明确保留1 bp边界敏感性及嵌套基因反例；当前实验模式不应直接替代v1基线。
-
-以下正文描述原v1模式及其read resolver。
+当前版本为 `v1.8-gene-only.1`，使用 gene-only v1 规则。参数是可调整的工程起始值，尚未证明对所有长读数据均最优。
 
 实现分成两层：
 
@@ -74,7 +32,7 @@ python3 scripts/pisa_resolve_gene_reads.py \
   --threads 4
 ```
 
-**当前 `PISA anno` 的 `-t`（默认 4）同时设置注释工作线程和 HTS 输入、输出线程，不是整个进程的线程总数上限。`-@` 被解析但未用于设置线程，所以当前无效；示例中的 `samtools -@` 属于 samtools 自己的参数，仍然有效。** `-intron` 在 gene-only 模式没有必要：这个模式使用整个 gene body，包括内含子。`-ignore-strand` 是示例选择；应根据文库方向信息决定，不等于文库一定没有链信息。
+**当前 `PISA anno` 的 `-t`（默认 4）同时设置注释工作线程和 HTS 输入、输出线程，不是整个进程的线程总数上限。`-@` 被解析但未用于设置线程，所以当前无效；`samtools -@` 属于 samtools 自己的参数，仍然有效。** `-intron` 在 gene-only 模式没有必要：这个模式使用整个 gene body，包括内含子。`-ignore-strand` 是示例选择；应根据文库方向信息决定，不等于文库一定没有链信息。
 
 多线程 PISA 注释输出不保证坐标有序，即使继承的 header 仍标为有序。若直接建立索引或用 IGV 查看，先执行 `samtools sort`；若交给 resolver，无需预先排序或索引，它会 collate 输入并将所有输出 BAM 坐标排序、建立索引。
 
@@ -105,6 +63,10 @@ PISA 的 gene-only 模式清理旧的基因、转录本、区域注释以及本�
 
 这些是可调整的工程起始值，不是已验证的最优生物学阈值。两层参数应保持一致。PISA 总是输出所有正重叠基因的证据，因此调整汇总阈值时不必改变比对或截断候选基因列表。
 
+在 C 注释层，对通过当前质量检查的 alignment，主基因达到最小支持和比例门槛、且其他候选满足次要支持约束时，写入单基因 GX。否则，若至少两个基因各达到 `-gene-min-bp`，写入排序后的 `AMBIG` GX；该分支不额外要求所有候选的支持并集达到80%。其他支持不足的情况不写 GX。C 层不汇总同名记录，也不生成融合判定。
+
+下面的 Python 汇总另加完整比对集合、query 区间并集、竞争 secondary 和可靠 anchor 检查。因此即使阈值相同，alignment 与 read 级标签也不保证一致；不能把 C 层的 AMBIG 数量当作最终 read 数量。
+
 ## Read 层的归属规则
 
 同名记录按 header 中 RG 对应的 LB 区分文库。没有 LB 时按 RG 区分；没有 RG 时视为同一输入文库。不同文库的数据不应在没有可区分的 RG/LB 标识时合并。
@@ -124,7 +86,7 @@ PISA 的 gene-only 模式清理旧的基因、转录本、区域注释以及本�
 
 缺 primary、多 primary、CB/UR 冲突、主比对链总 query 长度矛盾、SA 指向缺失片段、低／不可用 primary MAPQ 会旁路 UMI 输入。SA 完整性比较忽略软／硬剪切的表示差异，但仍要求规范化后的CIGAR相同。**已知限制：某些比对器在SA中写简化CIGAR，即使对应记录存在，也可能被误标为 `incomplete_alignment_set`；本版本尚未修正，应复核这些旁路结果。** 没有SA也不能证明某个区域切片已经包含完整比对集合。
 
-## 最终标签
+## Read resolver 的最终标签
 
 | 状态 | GX | 其他标签 |
 |---|---|---|
@@ -180,4 +142,4 @@ PISA_TEST_BINARY="$PWD/PISA" \
   python3 -m unittest discover -s scripts/tests -p 'test_pisa_gene_only*.py' -v
 ```
 
-46个合成用例覆盖基因边界、新剪接、CIGAR的M/=/X与D/N区别、共享与嵌套区域、替代比对、正反链及硬剪切分段、输入记录保留、缺失比对、标签冲突、primary-only输出，以及v2已知的边界行为。测试是规则实现验证，不代表生物学准确率验证。
+合成用例覆盖 gene-only v1 和 read resolver：基因边界、新剪接、CIGAR的M/=/X与D/N区别、共享与嵌套区域、替代比对、正反链及硬剪切分段、输入记录保留、缺失比对、标签冲突，以及primary-only输出。测试是规则实现验证，不代表生物学准确率验证。

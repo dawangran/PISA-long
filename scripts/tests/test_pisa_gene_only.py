@@ -338,6 +338,32 @@ class TestPisaGeneOnly(PipelineFixture):
                                 capture_output=True, text=True, timeout=30)
         self.assertNotEqual(result.returncode, 0)
 
+    def test_removed_v2_arguments_rejected_before_annotation(self):
+        removed_options = [
+            ["-gene-only-v2"], ["--gene-only-v2"],
+            ["-gene-v2-main-frac", "0.8"],
+            ["-gene-v2-exclusive-frac", "0.2"],
+            ["-gene-v2-exon-frac", "0.5"],
+            ["-gene-v2-weak-frac", "0.1"],
+        ]
+        # The input BAM/GTF are valid. Check both ordinary annotation and the
+        # retained gene-only mode so rejection cannot be a mode conflict or a
+        # missing-input error, and a removed option cannot silently fall back.
+        for gene_only in (False, True):
+            for index, options in enumerate(removed_options):
+                with self.subTest(gene_only=gene_only, option=options[0]):
+                    output = self.directory / f"removed-v2-{gene_only}-{index}.bam"
+                    command = self.command.copy()
+                    if not gene_only:
+                        command.remove("-gene-only")
+                    command[command.index(str(self.annotated))] = str(output)
+                    result = subprocess.run(command + options, text=True,
+                                            capture_output=True, timeout=30)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("Unknown argument", result.stderr)
+                    self.assertIn(options[0], result.stderr)
+                    self.assertFalse(output.exists())
+
 
 class TestReadResolver(PipelineFixture):
     @classmethod

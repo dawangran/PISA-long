@@ -2,7 +2,7 @@
 
 面向长读 RNA 比对的基因注释工具，基于 [PISA](https://github.com/shiquan/PISA) 扩展。根据实际比对片段给 BAM 写入基因 ID、候选集合和支持证据，供后续 read 级汇总及 UMI 分组使用。
 
-**当前提供 gene-only v1 基线和需要显式启用的 v2 实验模式。v2 尚不能替代 v1；两者都不是经过全面准确率验证的基因归属算法。** 本工具不执行 UMI 纠错或去重，也不把跨基因标签当作已经确认的融合。
+当前采用 **gene-only v1**，二进制版本为 `v1.8-gene-only.1`。规则阈值可调，尚未经过全面生物学准确率验证。本工具不执行 UMI 纠错或去重，也不把跨基因标签当作已经确认的融合。
 
 ## 安装
 
@@ -17,17 +17,13 @@ python3 -m pip install -r requirements-test.txt
 
 构建后可执行文件为仓库根目录的 `./PISA`，项目名称不改变原 PISA 命令名。`samtools` 需通过自己的系统或 Conda 环境安装。上游命令仍保留；原始使用文档见 [PISA User's Guide](https://shiquan.github.io/PISA.html)。
 
-## 选择模式
+## 工作流程
 
-| 方式 | 用途与状态 |
-|---|---|
-| `./PISA anno -gene-only` | v1 基线：按实际比对碱基与 gene body 的重叠注释，使用可调的 100 bp / 80% 等规则 |
-| `./PISA anno -gene-only-v2` | 实验：增加外显子、独占支持与已知剪接证据；有候选时保留 GX，存在已知边界问题 |
-| `scripts/pisa_resolve_gene_reads.py` | 可选 v1 read 级汇总：整合同名 primary、secondary、supplementary，准备 primary-only 工作 BAM |
+`./PISA anno -gene-only` 对每条 alignment 计算实际比对碱基与 gene body 的重叠，使用可调的 100 bp / 80% 等规则写入初步 GX。可选的 `scripts/pisa_resolve_gene_reads.py` 再汇总同名 primary、secondary、supplementary，重新判定 read 级标签并准备 primary-only 工作 BAM。
 
-两个 C 模式互斥，不添加模式参数时仍运行传统 PISA 注释。Python resolver 使用 v1 规则，**不能用于保留 v2 的判定结果：它会重算并覆盖 GX。**
+不加 `-gene-only` 时仍运行传统 PISA 注释。C 注释和 Python read 汇总处理不同层级，后者会重算 GX；两者的状态及计数不能混用。
 
-## 快速运行 v1
+## 快速运行
 
 以下命令从仓库根目录执行，替换 `genes.gtf` 和 `input.bam` 为自己的完整输入。GTF 与 BAM 应使用相同参考基因组和染色体命名。注释输入 BAM 不要求预先排序，也不需要索引。
 
@@ -59,18 +55,17 @@ resolver 内部先按名称 collate，再将所有输出 BAM 坐标排序并建�
 ## GX 与后续 UMI 分组
 
 - `GX` 保存 gene_id 或排序后的组合键，例如 `AMBIG:geneA|geneB`；`GN` 保存可读的基因名。
-- `ZG/ZN/ZB/ZQ` 保留 alignment 层的原始候选和实际支持量，`ZA/ZR` 记录状态与原因。
+- `ZG/ZN/ZB/ZQ` 保留 alignment 层的原始候选和实际支持量；PISA 写入初步 `ZA`，read resolver 再写入统一的 `ZA/ZR` 状态与原因。
 - `AMBIG` 表示仍有多个候选。read resolver 的 `FUSION` 也只表示候选组合，不是已验证融合或断点。
 - 后续工具按 GX 的完整字符串分组，不会自动把 `geneA` 与 `AMBIG:geneA|geneB` 合并，也不会自动根据自定义 ZA 排除低置信结果。
 - 不同文库应独立处理；同基因、同 CB、同 UR 也不保证剪接结构相同。基因注释不等于长读结构层面的去重。
 
 ## 已知限制
 
-1. **v1 的固定长度门槛**可能保留较短的次要命中，也可能忽略真实但较短的证据；目前作为可复核基线保留。
-2. **v2 的微小边界敏感性**：共享区域之外多出 1 bp，就可能不再满足“完全共享”；次要候选只要有外显子命中，又不能按“纯内含子弱候选”消减。嵌套基因也可能因独占 gene body 为零而无法选出主候选。见 [实验规则与反例](scripts/DESIGN.pisa_gene_assignment_v2.md)。
-3. **resolver 的 SA 完整性检查仍偏严格**：它规范化软/硬剪切后比较 CIGAR；某些比对器在 SA 中使用简化 CIGAR，即使对应记录存在也可能被标为 `incomplete_alignment_set`。应复核这类结果，不能据此认定比对丢失。
-4. C 注释是 alignment 级，不能仅凭 primary 的 GX 排除其他比对解释；区域 BAM 切片可能缺少 primary 或 supplementary。
-5. v2 的 `assigned_partial` 与相同基因的 `unique` 使用相同 GX。保留标签不等于已确定来源，ZA 不会自动保护后续去重。
+1. **固定长度门槛**可能保留较短的次要命中，也可能忽略真实但较短的证据；默认阈值是工程起始值，需要根据数据评估。
+2. **resolver 的 SA 完整性检查仍偏严格**：它规范化软/硬剪切后比较 CIGAR；某些比对器在 SA 中使用简化 CIGAR，即使对应记录存在也可能被标为 `incomplete_alignment_set`。应复核这类结果，不能据此认定比对丢失。
+3. C 注释是 alignment 级，不判断融合，也不会整合其他比对记录；区域 BAM 切片可能缺少 primary 或 supplementary，应在完整 BAM 上汇总 read 级证据。
+4. 标签覆盖率及合成测试通过不等于基因归属准确率。候选支持不足、质量不满足等情况下，v1 可以不写 GX；自定义 ZA 也不会自动保护后续去重。
 
 仓库提供可复现的合成测试，不包含研究样本 BAM、参考 GTF 或私有分析结果。
 
@@ -80,7 +75,7 @@ resolver 内部先按名称 collate，再将所有输出 BAM 坐标排序并建�
 make test
 ```
 
-当前包含 46 个合成回归用例，覆盖 v1/read resolver 和 v2，包括记录保留、CIGAR、共享/嵌套基因及已知边界行为。测试通过表示实现符合当前规则，不表示这些规则已通过生物学准确率验证。
+合成回归测试覆盖 gene-only v1 和 read resolver，包括记录保留、CIGAR、共享/嵌套基因、替代及补充比对。测试通过表示实现符合当前规则，不表示这些规则已通过生物学准确率验证。
 
 ## 来源与许可
 
