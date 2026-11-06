@@ -17,6 +17,25 @@ python3 -m pip install -r requirements-test.txt
 
 构建后可执行文件为仓库根目录的 `./PISA`，项目名称不改变原 PISA 命令名。`samtools` 需通过自己的系统或 Conda 环境安装。上游命令仍保留；原始使用文档见 [PISA User's Guide](https://shiquan.github.io/PISA.html)。
 
+## Docker 运行
+
+镜像 `dawang02/pisa-long:v1.8-gene-only.1` 面向 `linux/amd64`，包含 gene-only v1、Python 3.12、pysam 和 samtools。版本标签适合固定分析环境；`latest` 会随后续发布更新。
+
+在自己的 BAM/GTF 所在目录运行：
+
+```bash
+docker pull --platform linux/amd64 dawang02/pisa-long:v1.8-gene-only.1
+
+docker run --rm --platform linux/amd64 \
+  --user "$(id -u):$(id -g)" -v "$PWD":/data -w /data \
+  dawang02/pisa-long:v1.8-gene-only.1 \
+  PISA anno -gene-only -ignore-strand -t 4 \
+  -gtf /data/genes.gtf -o /data/gene_only.bam \
+  -report /data/gene_only.csv /data/input.bam
+```
+
+把文件名换成自己的输入，输出会写回当前目录。镜像不带样本数据，也不执行 UMI 去重。排序、索引、可选 read 汇总及本地构建命令见 [Docker 使用说明](docs/DOCKER.md)。
+
 ## 工作流程
 
 `./PISA anno -gene-only` 对每条 alignment 计算实际比对碱基与 gene body 的重叠，使用可调的 100 bp / 80% 等规则写入初步 GX。可选的 `scripts/pisa_resolve_gene_reads.py` 再汇总同名 primary、secondary、supplementary，重新判定 read 级标签并准备 primary-only 工作 BAM。

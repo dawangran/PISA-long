@@ -1,0 +1,45 @@
+# Whitelist source inputs. Git metadata, local BAMs/results, credentials and
+# binaries are not part of the build context.
+**
+!Dockerfile
+!.dockerignore
+!Makefile
+!pisa_version.h
+!LICENSE
+!README.md
+!requirements-test.txt
+!src/
+!src/*.c
+!src/*.h
+!third_party/
+!third_party/**/
+!third_party/**/*.c
+!third_party/**/*.h
+!third_party/**/*.mk
+!third_party/**/Makefile
+!third_party/**/Makefile.in
+!third_party/**/zconf.h.in
+!third_party/**/zlib.pc.in
+!third_party/htslib-1.10.2/version.sh
+!third_party/zlib-1.2.11/configure
+!scripts/
+!scripts/pisa_resolve_gene_reads.py
+!scripts/compare_pisa_gene_annotations.py
+!scripts/README.pisa_gene_only.md
+!scripts/tests/
+!scripts/tests/test_pisa_gene_only.py
+!docs/
+!docs/*.md
+!config/
+!config/*.json
+!config/*.txt
+
+# Exclude generated headers/makefiles even when their extension matches above.
+third_party/htslib-1.10.2/config.h
+third_party/htslib-1.10.2/version.h
+third_party/zlib-1.2.11/Makefile
+**/.git
+**/__pycache__
+**/*.pyc
+**/*.o
+**/*.a

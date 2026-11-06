@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import collections
 import gzip
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -26,6 +27,7 @@ import pysam
 ROOT = Path(__file__).resolve().parents[2]
 BINARY = Path(os.environ.get("PISA_TEST_BINARY", ROOT / "PISA"))
 RESOLVER = ROOT / "scripts" / "pisa_resolve_gene_reads.py"
+COMPARATOR = ROOT / "scripts" / "compare_pisa_gene_annotations.py"
 OWNED_TAGS = {
     "GX", "GN", "TX", "RE", "AT", "EX", "JC", "FL", "ER",
     "ZG", "ZN", "ZB", "ZQ", "ZA", "ZC", "ZR", "ZF",
@@ -205,6 +207,46 @@ def make_fixture(directory: Path) -> tuple[Path, Path]:
     pysam.sort("-o", str(bam), str(raw))
     pysam.index(str(bam))
     return bam, gtf
+
+
+class TestAnnotationComparator(unittest.TestCase):
+    def test_single_base_quality_fingerprints_are_repeatable_and_distinct(self):
+        spec = importlib.util.spec_from_file_location("pisa_comparison_test", COMPARATOR)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"Cannot load comparator: {COMPARATOR}")
+        comparator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(comparator)
+        header = pysam.AlignmentHeader.from_dict({
+            "HD": {"VN": "1.6"}, "SQ": [{"SN": "chr1", "LN": 1000}],
+        })
+
+        def read_with_quality(quality):
+            read = pysam.AlignedSegment(header)
+            read.query_name = "single_base"
+            read.flag = 0
+            read.reference_id = 0
+            read.reference_start = 10
+            read.mapping_quality = 60
+            read.cigarstring = "1M"
+            read.query_sequence = "A"
+            read.query_qualities = None if quality is None else [quality]
+            return read
+
+        fingerprints = {}
+        for quality in (40, 41, None):
+            for iteration in range(3):
+                with self.subTest(quality=quality, iteration=iteration):
+                    read = read_with_quality(quality)
+                    before = None if quality is None else [quality]
+                    fingerprint = comparator.alignment_core(read)
+                    self.assertEqual(fingerprint, comparator.alignment_core(read))
+                    if quality in fingerprints:
+                        self.assertEqual(fingerprint, fingerprints[quality])
+                    fingerprints[quality] = fingerprint
+                    actual = read.query_qualities
+                    self.assertEqual(None if actual is None else list(actual), before)
+        # Changed QUAL and absent QUAL must remain different alignment records.
+        self.assertEqual(len(set(fingerprints.values())), 3)
 
 
 class PipelineFixture(unittest.TestCase):

@@ -28,7 +28,7 @@ def alignment_core(read):
         read.query_name, read.flag, read.reference_name, read.reference_start,
         read.mapping_quality, read.cigarstring, read.next_reference_name,
         read.next_reference_start, read.template_length, read.query_sequence,
-        read.qual,
+        None if read.query_qualities is None else tuple(read.query_qualities),
     )
 
 

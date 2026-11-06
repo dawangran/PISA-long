@@ -1,0 +1,26 @@
+name: Container build and runtime smoke
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image and run builder regression tests
+        run: docker build --tag pisa-long:ci --build-arg BUILD_JOBS=2 --build-arg VCS_REF="$GITHUB_SHA" .
+      - name: Test installed commands as an unprivileged user
+        run: |
+          docker run --rm --network none --read-only \
+            --user 65534:65534 --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,nodev,size=256m,mode=1777 \
+            --mount "type=bind,src=$PWD/scripts/tests,dst=/tests,readonly" \
+            pisa-long:ci python3 /tests/container_smoke.py
